@@ -1,6 +1,17 @@
+import os
 import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+import discord
+import random
+import asyncio
+import shutil
+import imageio_ffmpeg
+from discord.ext import commands
+from dotenv import load_dotenv
+import yt_dlp
+from collections import deque
 
+# === MAŁY SERWER WWW DLA RENDER.COM ===
 def run_webserver():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
@@ -8,19 +19,6 @@ def run_webserver():
     server.serve_forever()
 
 threading.Thread(target=run_webserver, daemon=True).start()
-import os
-import discord
-import random
-import asyncio
-import shutil
-import platform
-import subprocess
-import imageio_ffmpeg
-from discord.ext import commands
-from discord import app_commands
-from dotenv import load_dotenv
-import yt_dlp
-from collections import deque
 
 # === AUTO-INSTALACJA FFMPEG ===
 def ensure_ffmpeg():
