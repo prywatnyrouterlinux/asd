@@ -1,0 +1,6 @@
+discord.py
+yt-dlp
+python-dotenv
+aiohttp
+asyncio
+imageio-ffmpeg
