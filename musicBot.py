@@ -1,3 +1,13 @@
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+
+def run_webserver():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    print(f"🌐 Web server running on port {port}")
+    server.serve_forever()
+
+threading.Thread(target=run_webserver, daemon=True).start()
 import os
 import discord
 import random
