@@ -1,5 +1,7 @@
 discord.py
 yt-dlp
 python-dotenv
-pynacl
+aiohttp
+asyncio
 imageio-ffmpeg
+pynacl
