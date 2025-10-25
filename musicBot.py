@@ -10,6 +10,7 @@ from collections import deque
 import asyncio
 import shutil
 
+
 # === Ładowanie tokena i FFMPEG ===
 load_dotenv()
 TOKEN = os.getenv("token")
