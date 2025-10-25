@@ -1,46 +1,27 @@
 import os
-import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 import discord
 import random
-import asyncio
-import shutil
-import imageio_ffmpeg
+discord.utils.setup_logging(level="WARNING")
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 import yt_dlp
 from collections import deque
+import asyncio
+import shutil
 
-# === MAŁY SERWER WWW DLA RENDER.COM ===
-def run_webserver():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    print(f"🌐 Web server running on port {port}")
-    server.serve_forever()
-
-threading.Thread(target=run_webserver, daemon=True).start()
-
-# === AUTO-INSTALACJA FFMPEG ===
-def ensure_ffmpeg():
-    try:
-        path = imageio_ffmpeg.get_ffmpeg_exe()
-        print(f"✅ Using FFMPEG from imageio-ffmpeg: {path}")
-        return path
-    except Exception as e:
-        print(f"⚠️ Failed to load ffmpeg automatically: {e}")
-        return shutil.which("ffmpeg") or "ffmpeg"
-
-# === KONFIGURACJA ===
+# === Ładowanie tokena i FFMPEG ===
 load_dotenv()
 TOKEN = os.getenv("token")
-ffmpeg_exe = ensure_ffmpeg()
+ffmpeg_exe = shutil.which("ffmpeg") or "./bin/ffmpeg.exe"
 
+# === Kolejki i tryby ===
 SONG_QUEUES = {}
 CURRENT_SONG = {}
 LOOP_MODE = {}
 AUTOSHUFFLE = {}
 
-# === POBIERANIE INFORMACJI O UTWORZE ===
+# === Pobieranie informacji o utworze ===
 async def get_audio_source(query):
     loop = asyncio.get_running_loop()
     ydl_opts_full = {
@@ -64,19 +45,23 @@ async def get_audio_source(query):
         "duration": full_info.get("duration"),
     }
 
-# === INICJALIZACJA BOTA ===
+# === Tworzenie bota ===
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# === Po uruchomieniu ===
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"✅ {bot.user} is online and ready!")
-    activity = discord.Activity(type=discord.ActivityType.listening, name="!play <song>")
+    print(f"{bot.user} is online and commands are synced!")
+    activity = discord.Activity(
+        type=discord.ActivityType.listening, 
+        name="your next request..."
+    )
     await bot.change_presence(status=discord.Status.online, activity=activity)
 
-# === ODTWARZANIE KOLEJNYCH PIOSENEK ===
+# === Odtwarzanie następnego utworu ===
 async def play_next_song(vc, guild_id, channel, message=None):
     guild_loop = LOOP_MODE.get(guild_id, "off")
     guild_autoshuffle = AUTOSHUFFLE.get(guild_id, False)
@@ -144,92 +129,109 @@ async def play_next_song(vc, guild_id, channel, message=None):
     else:
         await channel.send(embed=embed)
 
-# === KOMENDA PLAY ===
-@bot.tree.command(name="play", description="Odtwórz utwór z YouTube (link lub tytuł)")
-async def play(interaction: discord.Interaction, *, query: str):
-    await interaction.response.defer(thinking=True)
-
-    voice_state = interaction.user.voice
-    if not voice_state or not voice_state.channel:
-        await interaction.followup.send("❌ Musisz być na kanale głosowym.")
+# === Slash-komendy ===
+@bot.tree.command(name="play", description="Play a song from YouTube")
+@app_commands.describe(song_query="Search query or YouTube link")
+async def play(interaction: discord.Interaction, song_query: str):
+    await interaction.response.defer()
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.followup.send("❌ You must be in a voice channel to use this.")
         return
 
-    channel = voice_state.channel
+    voice_channel = interaction.user.voice.channel
     vc = interaction.guild.voice_client
 
-    if not vc:
-        vc = await channel.connect()
+    if vc is None:
+        vc = await voice_channel.connect()
+    elif vc.channel != voice_channel:
+        await vc.move_to(voice_channel)
 
-    if interaction.guild.id not in SONG_QUEUES:
-        SONG_QUEUES[interaction.guild.id] = deque()
+    guild_id = str(interaction.guild_id)
+    if SONG_QUEUES.get(guild_id) is None:
+        SONG_QUEUES[guild_id] = deque()
 
-    SONG_QUEUES[interaction.guild.id].append(query)
-    await interaction.followup.send(f"🎵 Dodano do kolejki: `{query}`")
+    loading_msg = await interaction.followup.send("⏳ Loading...")
 
-    if not vc.is_playing():
-        await play_next_song(vc, interaction.guild.id, interaction.channel)
+    result = await get_audio_source(song_query)
+    SONG_QUEUES[guild_id].append(song_query)
 
-# === KOMENDA PAUSE ===
-@bot.tree.command(name="pause", description="Wstrzymaj odtwarzanie")
+    if vc.is_playing() or vc.is_paused():
+        await loading_msg.edit(content=f"✅ Added to queue: **{result['title']}**")
+    else:
+        await play_next_song(vc, guild_id, interaction.channel, message=loading_msg)
+
+@bot.tree.command(name="skip", description="Skip the current song")
+async def skip(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()
+        await interaction.response.send_message("⏭️ Skipping song...")
+    else:
+        await interaction.response.send_message("❌ Nothing is currently playing.")
+
+@bot.tree.command(name="pause", description="Pause the current song")
 async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("⏸️ Wstrzymano muzykę.")
+        await interaction.response.send_message("⏸️ Paused playback.")
     else:
-        await interaction.response.send_message("❌ Nic nie jest odtwarzane.")
+        await interaction.response.send_message("❌ Nothing is currently playing.")
 
-# === KOMENDA RESUME ===
-@bot.tree.command(name="resume", description="Wznów odtwarzanie")
+@bot.tree.command(name="resume", description="Resume paused playback")
 async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("▶️ Wznowiono muzykę.")
+        await interaction.response.send_message("▶️ Resumed playback.")
     else:
-        await interaction.response.send_message("❌ Nic nie jest wstrzymane.")
+        await interaction.response.send_message("❌ Nothing is paused.")
 
-# === KOMENDA STOP ===
-@bot.tree.command(name="stop", description="Zatrzymaj muzykę i opuść kanał")
+@bot.tree.command(name="stop", description="Stop playback and clear the queue")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+    guild_id = str(interaction.guild_id)
     if vc:
         await vc.disconnect()
-        SONG_QUEUES[interaction.guild.id] = deque()
-        CURRENT_SONG[interaction.guild.id] = None
-        await interaction.response.send_message("⏹️ Bot zatrzymany i odłączony.")
-    else:
-        await interaction.response.send_message("❌ Bot nie jest podłączony.")
+    SONG_QUEUES[guild_id] = deque()
+    CURRENT_SONG[guild_id] = None
+    LOOP_MODE[guild_id] = "off"
+    AUTOSHUFFLE[guild_id] = False
+    await interaction.response.send_message("🛑 Stopped playback and cleared the queue.")
 
-# === KOMENDA QUEUE ===
-@bot.tree.command(name="queue", description="Pokaż kolejkę utworów")
-async def queue(interaction: discord.Interaction):
-    queue = SONG_QUEUES.get(interaction.guild.id, deque())
-    if not queue:
-        await interaction.response.send_message("🎵 Kolejka jest pusta.")
+@bot.tree.command(name="help", description="Show all commands and their descriptions")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📖 Bot Commands",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="/play <song>", value="Play a song from YouTube", inline=False)
+    embed.add_field(name="/skip", value="Skip the current song", inline=False)
+    embed.add_field(name="/pause", value="Pause playback", inline=False)
+    embed.add_field(name="/resume", value="Resume playback", inline=False)
+    embed.add_field(name="/stop", value="Stop playback and clear the queue", inline=False)
+    embed.add_field(name="/queue", value="Show the current queue", inline=False)
+    embed.add_field(name="/loop <off|song|queue>", value="Set loop mode", inline=False)
+    embed.add_field(name="/shuffle", value="Shuffle the queue manually", inline=False)
+    embed.add_field(name="/autoshuffle <on|off>", value="Enable automatic shuffling", inline=False)
+    embed.add_field(name="/volume <0-200>", value="Adjust volume", inline=False)
+    embed.add_field(name="/clear <amount>", value="Delete messages (Admin only)", inline=False)
+    embed.set_footer(text="Bot created by: opilog12")
+    embed.set_image(url="attachment://baner.gif")
+    with open("baner.gif", "rb") as f:
+        await interaction.response.send_message(file=discord.File(f, filename="baner.gif"), embed=embed)
+
+# === Klasyczna komenda tekstowa !echo ===
+@bot.command(name="echo")
+async def echo(ctx, *, message: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ You need administrator permissions to use this command.")
         return
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+    await ctx.send(message)
 
-    desc = "\n".join([f"{i+1}. {song}" for i, song in enumerate(queue)])
-    embed = discord.Embed(title="🎶 Kolejka utworów", description=desc, color=discord.Color.blurple())
-    await interaction.response.send_message(embed=embed)
-
-# === KOMENDA LOOP ===
-@bot.tree.command(name="loop", description="Ustaw tryb zapętlania (off/song/queue)")
-async def loop(interaction: discord.Interaction, mode: str):
-    if mode not in ["off", "song", "queue"]:
-        await interaction.response.send_message("⚙️ Dostępne tryby: `off`, `song`, `queue`.")
-        return
-
-    LOOP_MODE[interaction.guild.id] = mode
-    await interaction.response.send_message(f"🔁 Tryb pętli ustawiony na: `{mode}`")
-
-# === KOMENDA SHUFFLE ===
-@bot.tree.command(name="shuffle", description="Włącz/wyłącz automatyczne tasowanie kolejki")
-async def shuffle(interaction: discord.Interaction):
-    current = AUTOSHUFFLE.get(interaction.guild.id, False)
-    AUTOSHUFFLE[interaction.guild.id] = not current
-    status = "ON" if not current else "OFF"
-    await interaction.response.send_message(f"🔀 Auto-shuffle: **{status}**")
-
-# === START BOTA ===
+# === Start bota ===
 bot.run(TOKEN)
